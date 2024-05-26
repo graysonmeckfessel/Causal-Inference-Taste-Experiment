@@ -1,0 +1,533 @@
+---
+title: "Info 241 Preliminary Tests"
+output:
+  pdf_document: default
+  html_document: default
+date: '2024-04-15'
+---
+
+```{r}
+library(knitr)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+```
+
+# Clean Data
+
+```{r}
+# Read in data from each phase
+phase1_treatment <- read.csv("treatment1.csv")
+phase1_control <- read.csv("control1.csv")
+
+phase2_treatment <- read.csv("treatment2.csv")
+phase2_control <- read.csv("control2.csv")
+
+phase3_treatment <- read.csv("treatment3.csv")
+phase3_control <- read.csv("control3.csv")
+
+# Add columns indicating treatment/control and phase
+phase1_treatment$Phase <- 1
+phase1_treatment$Group <- 1
+
+phase1_control$Phase <- 1
+phase1_control$Group <- 0
+
+phase2_treatment$Phase <- 2
+phase2_treatment$Group <- 1
+
+phase2_control$Phase <- 2
+phase2_control$Group <- 0
+
+phase3_treatment$Phase <- 3
+phase3_treatment$Group <- 1
+
+phase3_control$Phase <- 3
+phase3_control$Group <- 0
+
+# Combine the data frames into one
+combined_data <- rbind(phase1_treatment, phase1_control, phase2_treatment, phase2_control, phase3_treatment, phase3_control)
+
+# modify the names
+names(combined_data) = c("timestamp", "texture_a", "taste_a", "quality_a", "texture_b", "taste_b", "quality_b", "age", "sweet_savory","hunger","vegan","dairy","exercise", "phase","treatment")
+
+# Optional: If you want to save the combined data to a CSV file
+write.csv(combined_data, "combined_data.csv", row.names = FALSE)
+
+# View the combined data
+kable(head(combined_data))
+```
+
+
+# Compare Difference in Cookie Taste/Treatment/Quality for Treatment vs. Control Across each Phase
+
+```{r}
+# Function to conduct t-tests on the difference in mean difference between treatment and control groups
+conduct_t_tests_mean_diff <- function(phase_data, var_a, var_b) {
+  treatment_mean_diff <- mean(phase_data[[var_a]] - phase_data[[var_b]])
+  control_mean_diff <- mean(phase_data[[var_a]][phase_data$treatment == 0] - phase_data[[var_b]][phase_data$treatment == 0])
+  
+  t_test_result <- t.test(phase_data[[var_a]] - phase_data[[var_b]],
+                          subset = phase_data$treatment == 1,
+                          mu = control_mean_diff)
+  
+  return(t_test_result$p.value)
+}
+
+# Function to generate results for each phase
+generate_phase_results <- function(combined_data, vars_a, vars_b) {
+  results <- data.frame(Phase = numeric(), P_value = numeric())
+  
+  for (phase in unique(combined_data$phase)) {
+    phase_data <- combined_data[combined_data$phase == phase, ]
+    p_values <- sapply(1:length(vars_a), function(i) conduct_t_tests_mean_diff(phase_data, vars_a[i], vars_b[i]))
+    
+    results <- rbind(results, data.frame(Phase = phase, P_value = p_values))
+  }
+  
+  return(results)
+}
+
+# Specify the variables
+vars_a <- c("texture_a", "quality_a", "taste_a")
+vars_b <- c("texture_b", "quality_b", "taste_b")
+
+# Generate results for each phase
+results <- round(generate_phase_results(combined_data, vars_a, vars_b),4)
+results$Question <- rep(c("texture","quality","taste"),3)
+results$Null <- c(rep("cookie order doesn't matter",3),rep("info doesn't matter", 3),rep("info with box doesn't matter",3))
+                  
+# Output the results
+kable(caption="P-values for difference between treatment and control",results)
+
+
+```
+
+## Diff in Diff Plots for Phase 1, 2, 3 Results
+```{r}
+# Function to generate a plot with overlaid categories for a given phase
+generate_combined_categories_plot <- function(phase_data, phase_number) {
+  # Filter data for the current phase
+  phase_data <- phase_data[phase_data$phase == phase_number, ]
+  
+  # Calculate mean ratings for Cookie A and Cookie B for each category
+  means <- phase_data %>%
+    group_by(treatment) %>%
+    summarise(
+      taste_a = mean(taste_a),
+      taste_b = mean(taste_b),
+      texture_a = mean(texture_a),
+      texture_b = mean(texture_b),
+      quality_a = mean(quality_a),
+      quality_b = mean(quality_b)
+    ) %>%
+    pivot_longer(cols = -treatment, names_to = c("Category", "Cookie"), names_sep = "_") %>%
+    mutate(Cookie = factor(Cookie, levels = c("a", "b"), labels = c("Cookie A", "Cookie B")),
+           Category = factor(Category, levels = c("taste", "texture", "quality")))
+  
+  # Convert treatment to a more descriptive factor
+  means$treatment <- factor(means$treatment, levels = c(0, 1), labels = c("Control", "Treatment"))
+  
+  # Create the plot
+  p <- ggplot(means, aes(x = Cookie, y = value, group = interaction(Category, treatment), color = Category, linetype = treatment)) +
+    geom_line() +
+    geom_point(size = 3) +
+    scale_color_manual(values=c("red", "green", "blue")) +
+    scale_linetype_manual(values=c("dotted", "solid")) +
+    labs(title = paste("Phase", phase_number, ": Mean Ratings (Treatment vs. Control)"),
+         x = "",
+         y = "Mean Rating") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  return(p)
+}
+
+# Generate the plot
+combined_categories_plot1 <- generate_combined_categories_plot(combined_data, 1)
+combined_categories_plot2 <- generate_combined_categories_plot(combined_data, 2)
+combined_categories_plot3 <- generate_combined_categories_plot(combined_data, 3)
+
+# Print the plot
+print(combined_categories_plot1)
+print(combined_categories_plot2)
+print(combined_categories_plot3)
+```
+
+```{r box plots Grayson}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Function to generate box plots for taste, texture, and quality for a given phase
+generate_phase_boxplots <- function(phase_data, phase_number, phase_description) {
+  # Filter data for the current phase
+  filtered_data <- phase_data %>%
+    filter(phase == phase_number) %>%
+    select(treatment, starts_with("taste"), starts_with("texture"), starts_with("quality")) %>%
+    pivot_longer(cols = -treatment, names_to = "Attribute_Cookie", values_to = "Rating") %>%
+    separate(Attribute_Cookie, into = c("Attribute", "Cookie"), sep = "_") %>%
+    mutate(
+      Cookie = factor(Cookie, levels = c("a", "b"), labels = c("Cookie A", "Cookie B")),
+      Attribute = factor(Attribute, levels = c("taste", "texture", "quality")),
+      Treatment = factor(treatment, levels = c(0, 1), labels = c("Control", "Treatment"))
+    )
+
+  # Create the box plot
+  p <- ggplot(filtered_data, aes(x = Attribute, y = Rating, fill = Treatment)) +
+    geom_boxplot() +
+    facet_wrap(~Cookie, scales = "free_x") +
+    labs(title = paste(phase_description, "- Treatment vs. Control"),
+         x = "",
+         y = "Rating") +
+    theme_minimal() +
+    theme(legend.position = "bottom") +
+    scale_fill_manual(values = c("Control" = "#F8766D", "Treatment" = "#00BFC4"))
+  
+  return(p)
+}
+
+# Assuming combined_data is your data frame that includes all the necessary variables
+# Generate box plots for each phase with descriptive titles
+boxplot_phase1 <- generate_phase_boxplots(combined_data, 1, "Phase 1: Cookie Order")
+boxplot_phase2 <- generate_phase_boxplots(combined_data, 2, "Phase 2: Verbal Information")
+boxplot_phase3 <- generate_phase_boxplots(combined_data, 3, "Phase 3: Verbal Information + Packaging")
+
+# Print the plots
+print(boxplot_phase1)
+print(boxplot_phase2)
+print(boxplot_phase3)
+```
+
+```{r boc plot stats}
+library(dplyr)
+library(tidyr)
+
+# Enhanced function to generate statistics instead of plots
+generate_phase_stats <- function(phase_data, phase_number) {
+  # Filter and prepare data for the current phase
+  filtered_data <- phase_data %>%
+    filter(phase == phase_number) %>%
+    select(treatment, starts_with("taste"), starts_with("texture"), starts_with("quality")) %>%
+    pivot_longer(cols = -treatment, names_to = "Attribute_Cookie", values_to = "Rating") %>%
+    separate(Attribute_Cookie, into = c("Attribute", "Cookie"), sep = "_") %>%
+    mutate(
+      Cookie = factor(Cookie, levels = c("a", "b"), labels = c("Cookie A", "Cookie B")),
+      Attribute = factor(Attribute, levels = c("taste", "texture", "quality")),
+      Treatment = factor(treatment, levels = c(0, 1), labels = c("Control", "Treatment"))
+    )
+  
+  # Calculate statistics for each combination of Cookie, Attribute, and Treatment
+  stats_data <- filtered_data %>%
+    group_by(Cookie, Attribute, Treatment) %>%
+    summarise(
+      Median = median(Rating),
+      IQR = IQR(Rating),
+      Lower_Whisker = boxplot.stats(Rating)$stats[1],
+      Upper_Whisker = boxplot.stats(Rating)$stats[5],
+      Outliers = list(boxplot.stats(Rating)$out),
+      .groups = 'drop'
+    )
+  
+  return(stats_data)
+}
+
+# Assuming combined_data is your data frame that includes all the necessary variables
+# Get statistics for each phase
+stats_phase1 <- generate_phase_stats(combined_data, 1)
+stats_phase2 <- generate_phase_stats(combined_data, 2)
+stats_phase3 <- generate_phase_stats(combined_data, 3)
+
+# Display the statistics for each phase
+print(stats_phase1)
+print(stats_phase2)
+print(stats_phase3)
+
+```
+
+# Lauren's Part
+
+```{r}
+# Function to conduct t-tests on the difference in mean difference between two phases
+conduct_t_tests_mean_diff_between_phases <- function(phase1_data, phase2_data) {
+  phase1_mean_diff <- mean(phase1_data$taste_a - phase1_data$taste_b)
+  phase2_mean_diff <- mean(phase2_data$taste_a - phase2_data$taste_b)
+  
+  t_test_result <- t.test(phase1_data$taste_a - phase1_data$taste_b,
+                          phase2_data$taste_a - phase2_data$taste_b,
+                          mu = phase2_mean_diff - phase1_mean_diff)
+  
+  return(t_test_result$p.value)
+}
+```
+
+```{r}
+# Phase 2 Control vs Phase 3 Control
+phase2_control <- combined_data[combined_data$phase == 2 & combined_data$treatment == 0, ]
+phase3_control <- combined_data[combined_data$phase == 3 & combined_data$treatment == 0, ]
+phase2_3_control_p_value <- conduct_t_tests_mean_diff_between_phases(phase2_control, phase3_control)
+
+# Phase 2 Treatment vs Phase 3 Treatment
+phase2_treatment <- combined_data[combined_data$phase == 2 & combined_data$treatment == 1, ]
+phase3_treatment <- combined_data[combined_data$phase == 3 & combined_data$treatment == 1, ]
+phase2_3_treatment_p_value <- conduct_t_tests_mean_diff_between_phases(phase2_treatment, phase3_treatment)
+
+# Output the results
+results <- data.frame(
+  Null = c("Box with no info doesn't matter", "Box with info doesn't matter"),
+  P_value = round(c(phase2_3_control_p_value, phase2_3_treatment_p_value),4)
+)
+
+kable(caption= "P-values for difference between Phase 2 and 3 Results",results)
+
+```
+
+## Diff in Diff Plots Comparing Across Phase 3 and Phase 2
+
+```{r}
+# Function to generate a plot with overlaid categories for a given phase
+generate_combined_categories_plot <- function(phase_data, treat) {
+  # Filter data for the current phase
+  phase_data <- phase_data[phase_data$treatment == treat, ]
+  
+  # Calculate mean ratings for Cookie A and Cookie B for each category
+  means <- phase_data %>%
+    group_by(phase) %>%
+    summarise(
+      taste_a = mean(taste_a),
+      taste_b = mean(taste_b),
+      texture_a = mean(texture_a),
+      texture_b = mean(texture_b),
+      quality_a = mean(quality_a),
+      quality_b = mean(quality_b)
+    ) %>%
+    pivot_longer(cols = -phase, names_to = c("Category", "Cookie"), names_sep = "_") %>%
+    mutate(Cookie = factor(Cookie, levels = c("a", "b"), labels = c("Cookie A", "Cookie B")),
+           Category = factor(Category, levels = c("taste", "texture", "quality")))
+  
+  # Convert treatment to a more descriptive factor
+  means$Packaging <- factor(means$phase, levels = c(1, 0), labels = c("No Box", "Box"))
+  
+  # Create the plot
+  title_option = c("No Information is Provided", "Information is Provided")
+  p <- ggplot(means, aes(x = Cookie, y = value, group = interaction(Category, Packaging), color = Category, linetype = Packaging)) +
+    geom_line() +
+    geom_point(size = 3) +
+    scale_color_manual(values=c("red", "green", "blue")) +
+    scale_linetype_manual(values=c("dotted", "solid")) +
+    labs(title = paste(title_option[treat+1], ": Mean Ratings (Box vs. No Box)"),
+         x = "",
+         y = "Mean Rating") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  return(p)
+}
+
+# Generate the plot
+data23 = filter(combined_data, phase>1)
+data23$phase = data23$phase-2
+combined_categories_plot1 <- generate_combined_categories_plot(data23, 1)
+combined_categories_plot2 <- generate_combined_categories_plot(data23, 0)
+print(combined_categories_plot1)
+print(combined_categories_plot2)
+```
+
+# Boxplots
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+generate_taste_boxplot <- function(phase_data, treat) {
+  # Filter data for the current phase and treatment
+  filtered_data <- phase_data %>%
+    dplyr::filter(treatment == treat) %>%
+    dplyr::select(phase, taste_a, taste_b) %>%
+    pivot_longer(cols = c(taste_a, taste_b), names_to = "Cookie", values_to = "Taste") %>%
+    mutate(Cookie = factor(sub("taste_", "", Cookie), levels = c("a", "b"), labels = c("Cookie A", "Cookie B")),
+           Phase = factor(phase, levels = c(0, 1), labels = c("Phase 2 (no box)", "Phase 3 (box)")))
+
+  # Create the box plot
+  p <- ggplot(filtered_data, aes(x = Cookie, y = Taste, fill = Phase)) +
+    geom_boxplot() +
+    labs(title = ifelse(treat == 1, "Information is Provided (Treatment Group) - Mean Taste Ratings", "No Information is Provided (Control Group) - Mean Taste Ratings"),
+         x = "",
+         y = "Taste Rating") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  return(p)
+}
+
+# Prepare the data
+data23 <- combined_data %>%
+  filter(phase > 1) %>%
+  mutate(phase = phase - 2)
+
+# Generate and print the box plots
+boxplot_treat1 <- generate_taste_boxplot(data23, 1)
+boxplot_treat0 <- generate_taste_boxplot(data23, 0)
+
+print(boxplot_treat1)
+print(boxplot_treat0)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Function to generate a box plot for taste ratings
+generate_taste_boxplot <- function(phase_data, treat) {
+  # Filter data for the current phase and treatment
+  filtered_data <- phase_data %>%
+    dplyr::filter(treatment == treat) %>%
+    dplyr::select(phase, taste_a, taste_b) %>%
+    pivot_longer(cols = c(taste_a, taste_b), names_to = "Cookie", values_to = "Taste") %>%
+    mutate(Cookie = factor(sub("taste_", "", Cookie), levels = c("a", "b"), labels = c("Cookie A", "Cookie B")),
+           Phase = factor(phase, levels = c(0, 1), labels = c("Phase 2 (no box)", "Phase 3 (box)")))
+
+  # Create the box plot
+  p <- ggplot(filtered_data, aes(x = Cookie, y = Taste, fill = Phase)) +
+    geom_boxplot() +
+    labs(title = ifelse(treat == 1, "Information is Provided (Treatment Group) - Mean Taste Ratings", "No Information is Provided (Control Group) - Mean Taste Ratings"),
+         x = "",
+         y = "Taste Rating") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  return(p)
+}
+
+# Prepare the data
+data23 <- combined_data %>%
+  filter(phase > 1) %>%
+  mutate(phase = phase - 2)
+
+# Generate and print the box plots
+boxplot_treat1 <- generate_taste_boxplot(data23, 1)
+boxplot_treat0 <- generate_taste_boxplot(data23, 0)
+
+print(boxplot_treat1)
+print(boxplot_treat0)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Function to generate a box plot for quality ratings
+generate_quality_boxplot <- function(phase_data, treat) {
+  # Filter data for the current phase and treatment
+  filtered_data <- phase_data %>%
+    dplyr::filter(treatment == treat) %>%
+    dplyr::select(phase, quality_a, quality_b) %>%
+    pivot_longer(cols = c(quality_a, quality_b), names_to = "Cookie", values_to = "Quality") %>%
+    mutate(Cookie = factor(sub("quality_", "", Cookie), levels = c("a", "b"), labels = c("Cookie A", "Cookie B")),
+           Phase = factor(phase, levels = c(0, 1), labels = c("Phase 2 (no box)", "Phase 3 (box)")))
+
+  # Create the box plot
+  p <- ggplot(filtered_data, aes(x = Cookie, y = Quality, fill = Phase)) +
+    geom_boxplot() +
+    labs(title = ifelse(treat == 1, "Information is Provided (Treatment Group) - Mean Quality Ratings", "No Information is Provided (Control Group) - Mean Quality Ratings"),
+         x = "",
+         y = "Quality Rating") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  return(p)
+}
+
+# Prepare the data
+data23 <- combined_data %>%
+  filter(phase > 1) %>%
+  mutate(phase = phase - 2)
+
+# Generate and print the box plots
+boxplot_treat1 <- generate_quality_boxplot(data23, 1)
+boxplot_treat0 <- generate_quality_boxplot(data23, 0)
+
+print(boxplot_treat1)
+print(boxplot_treat0)
+```
+
+```{r}
+# Function to generate a box plot for taste ratings
+generate_taste_box_plot <- function(phase_data, treat) {
+  # Filter data for the current treatment
+  phase_data <- phase_data[phase_data$treatment == treat, ]
+  
+  # Focus only on taste ratings for Cookie A and Cookie B
+  taste_data <- phase_data %>%
+    dplyr::select(phase, taste_a, taste_b) %>%
+    pivot_longer(cols = c(taste_a, taste_b), names_to = "Cookie", names_prefix = "taste_", values_to = "Taste") %>%
+    mutate(Cookie = factor(Cookie, levels = c("a", "b"), labels = c("Cookie A", "Cookie B")))
+  
+  # Convert phase to a more descriptive factor for packaging
+  taste_data$Packaging <- factor(taste_data$phase, levels = c(1, 0), labels = c("No Box", "Box"))
+  
+  # Create the box plot
+  p <- ggplot(taste_data, aes(x = Cookie, y = Taste, fill = Packaging)) +
+    geom_boxplot() +
+    labs(title = "Taste Ratings by Cookie and Packaging",
+         x = "Cookie Type",
+         y = "Taste Rating") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  return(p)
+}
+
+# Generate the plot for different treatments
+data23 = filter(combined_data, phase > 1)
+data23$phase = data23$phase - 2
+taste_box_plot1 <- generate_taste_box_plot(data23, 1)
+taste_box_plot2 <- generate_taste_box_plot(data23, 0)
+print(taste_box_plot1)
+print(taste_box_plot2)
+
+```
+
+```{r}
+# Function to generate a box plot for taste ratings with dynamic titles
+generate_taste_box_plot <- function(phase_data, treat) {
+  # Filter data for the current treatment
+  phase_data <- phase_data[phase_data$treatment == treat, ]
+  
+  # Focus only on taste ratings for Cookie A and Cookie B
+  taste_data <- phase_data %>%
+    dplyr::select(phase, taste_a, taste_b) %>%
+    pivot_longer(cols = c(taste_a, taste_b), names_to = "Cookie", names_prefix = "taste_", values_to = "Taste") %>%
+    mutate(Cookie = factor(Cookie, levels = c("a", "b"), labels = c("Cookie A", "Cookie B")))
+  
+  # Convert phase to a more descriptive factor for packaging
+  taste_data$Packaging <- factor(taste_data$phase, levels = c(1, 0), labels = c("No Box", "Box"))
+  
+  # Define the title based on the treatment
+  title_text <- ifelse(treat == 1, "Information is Provided (Treatment Group) - Mean Taste Ratings", "No Information is Provided (Control Group) - Mean Taste Ratings")
+  
+  # Create the box plot
+  p <- ggplot(taste_data, aes(x = Cookie, y = Taste, fill = Packaging)) +
+    geom_boxplot() +
+    labs(title = title_text,
+         x = "Cookie Type",
+         y = "Taste Rating") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  return(p)
+}
+
+# Generate the plot for different treatments
+data23 = filter(combined_data, phase > 1)
+data23$phase = data23$phase - 2
+taste_box_plot1 <- generate_taste_box_plot(data23, 1)
+taste_box_plot2 <- generate_taste_box_plot(data23, 0)
+print(taste_box_plot1)
+print(taste_box_plot2)
+
+```
+
